@@ -26,17 +26,12 @@ data "aws_vpc" "togetvpc_id" {
   }
 }
 
-# Data Source to Fetch All Subnets in the VPC:
 data "aws_subnets" "vpc_subnets" {
   filter {
     name   = "vpc-id"
     values = ["vpc-0e085fee9299e3036"]  # Replace with your VPC ID
   }
 }
- 
-# Data Source to Get Details of Each Subnet:
-# Iterates over all subnet IDs fetched by aws_subnets to get detailed information about each subnet.
-# Uses count to iterate over each subnet ID.
 
 data "aws_subnet" "subnet_details" {
   count = length(data.aws_subnets.vpc_subnets.ids)
@@ -54,4 +49,7 @@ locals {
   ]
 }
 
-
+data "aws_lb_target_group" "example" {
+  for_each = toset(var.target_group_names)
+  name     = each.value
+}

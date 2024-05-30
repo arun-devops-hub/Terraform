@@ -58,8 +58,7 @@ resource "aws_lb" "my_alb" {
  internal           = false
  load_balancer_type = "application"
  security_groups    = [aws_security_group.mainalb_sg.id]
- subnets            = ["subnet-03b1e74241ae7f7d5", "subnet-077490c65059b1e89","subnet-0fd4a6ea8fbcaa46f"]
-
+ subnets            = ["subnet-040a19bdd05a7d574", "subnet-05e4bb68f78b75902","subnet-0fa69d28835993aa1"]
  tags = {
    Environment = "dev"
  }
