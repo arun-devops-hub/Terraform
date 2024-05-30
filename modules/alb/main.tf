@@ -1,4 +1,5 @@
-resource "aws_instance" "instance_a" { //Instance A
+
+resource "aws_instance" "instance_a" { 
  count = length(local.public_subnet_ids)
  ami           = data.aws_ami.ubuntu.id
  instance_type = var.instance_type
@@ -11,19 +12,8 @@ resource "aws_instance" "instance_a" { //Instance A
  tags = {
    Name = "web-server-${count.index}"
  }
-
- user_data = <<-EOF
-             #!/bin/bash
-             sudo apt-get update
-             sudo apt-get install -y nginx
-             sudo systemctl start nginx
-             sudo systemctl enable nginx
-             echo '<!doctype html>
-             <html lang="en"><h1>Register!</h1></br>
-             </html>' | sudo tee /var/www/html/index.html
-             sudo systemctl reload nginx
-             EOF
 }
+ 
 
 resource "aws_key_pair" "my_tf_key" {
     key_name = "tf_key"
@@ -68,7 +58,7 @@ resource "aws_lb" "my_alb" {
  internal           = false
  load_balancer_type = "application"
  security_groups    = [aws_security_group.mainalb_sg.id]
- subnets            = ["subnet-054f47b79004d41fb", "subnet-0e2f16468ea2b8582"]
+ subnets            = ["subnet-03b1e74241ae7f7d5", "subnet-077490c65059b1e89","subnet-0fd4a6ea8fbcaa46f"]
 
  tags = {
    Environment = "dev"

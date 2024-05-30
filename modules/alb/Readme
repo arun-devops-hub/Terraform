@@ -1,0 +1,400 @@
+# https://spacelift.io/blog/terraform-alb
+
+What is AWS Application Load Balancer?
+Load balancers are one of the crucial components of distributed architecture. They help assign incoming requests to multiple target servers to ensure efficiency and avoid delays and downtimes. There are two categories of load balancers – Application Load Balancer (ALB) and Network Load Balancer. 
+
+AWS Application Load Balancers operate at layer 7 of the OSI model, making it better equipped to make routing decisions at the application level. ALBs can interpret an incoming request’s protocol, port, headers, method, and other attributes. We can leverage this capability to route the requests to appropriate processing destinations.
+
+Prerequisites - the target architecture
+terraform alb module
+The diagram above represents the target architecture we want to achieve in this blog post. We will configure:
+
+Application load balancer – which will route the incoming requests to the listener, where we configure the routing rules
+Listener – that plays an important role in making routing decisions.
+Listener rules – we will configure the listener rules to route the requests to various target groups.
+Target group – each target group is a collection of EC2 instances that serve a specific request based on path value.
+EC2 instances – each target group houses one EC2 instance. Each instance is configured with a Nginx web server, which responds uniquely.
+To manage AWS Application Load Balancers with Terraform ALB resources, follow the steps below:
+
+Configure the EC2 instances
+Create an ALB Target Group
+Add the ALB Target Group attachment
+Create an ALB Listener
+Manage custom ALB Listener rules
+Test the path-based routing on ALB
+The full source code for the examples discussed in this post is available here.
+
+1. Configure EC2 instances
+We want to serve requests based on what path they are targeted at. As the diagram above shows, incoming requests can be classified based on whether:
+
+They are targeted toward the homepage
+They are registration requests
+They are related to images.
+Each of the types described above needs to be served separately.
+
+Let’s provision three EC2 instances serving the corresponding requests, as seen in the Terraform configuration below. 
+
+We have used the user_data attribute to supply a script that installs and runs the nginx service. Further, each nginx is configured separately to serve separate paths:
+
+Instance A – responds to root path
+Instance B – responds to /images path
+Instance C – responds to /register path
+resource "aws_instance" "instance_a" { //Instance A
+ ami           = var.ami
+ instance_type = "t2.micro"
+
+ subnet_id = var.subnet_a
+
+ key_name = "tfserverkey"
+
+ tags = {
+   Name = "Instance A"
+ }
+
+ user_data = <<-EOF
+             #!/bin/bash
+             sudo apt-get update
+             sudo apt-get install -y nginx
+             sudo systemctl start nginx
+             sudo systemctl enable nginx
+             echo '<!doctype html>
+             <html lang="en"><h1>Home page!</h1></br>
+             <h3>(Instance A)</h3>
+             </html>' | sudo tee /var/www/html/index.html
+             EOF
+}
+
+resource "aws_instance" "instance_b" { //Instance B
+ ami           = var.ami
+ instance_type = "t2.micro"
+
+ subnet_id = var.subnet_b
+
+ key_name = "tfserverkey"
+
+ tags = {
+   Name = "Instance B"
+ }
+
+ user_data = <<-EOF
+             #!/bin/bash
+             sudo apt-get update
+             sudo apt-get install -y nginx
+             sudo systemctl start nginx
+             sudo systemctl enable nginx
+             echo '<!doctype html>
+             <html lang="en"><h1>Images!</h1></br>
+             <h3>(Instance B)</h3>
+             </html>' | sudo tee /var/www/html/index.html
+             echo 'server {
+                       listen 80 default_server;
+                       listen [::]:80 default_server;
+                       root /var/www/html;
+                       index index.html index.htm index.nginx-debian.html;
+                       server_name _;
+                       location /images/ {
+                           alias /var/www/html/;
+                           index index.html;
+                       }
+                       location / {
+                           try_files $uri $uri/ =404;
+                       }
+                   }' | sudo tee /etc/nginx/sites-available/default
+             sudo systemctl reload nginx
+             EOF
+}
+
+resource "aws_instance" "instance_c" { //Instance C
+ ami           = var.ami
+ instance_type = "t2.micro"
+
+ subnet_id = var.subnet_c
+
+ key_name = "tfserverkey"
+
+ tags = {
+   Name = "Instance C"
+ }
+
+ user_data = <<-EOF
+             #!/bin/bash
+             sudo apt-get update
+             sudo apt-get install -y nginx
+             sudo systemctl start nginx
+             sudo systemctl enable nginx
+             echo '<!doctype html>
+             <html lang="en"><h1>Register!</h1></br>
+             <h3>(Instance C)</h3>
+             </html>' | sudo tee /var/www/html/index.html
+             echo 'server {
+                       listen 80 default_server;
+                       listen [::]:80 default_server;
+                       root /var/www/html;
+                       index index.html index.htm index.nginx-debian.html;
+                       server_name _;
+                       location /register/ {
+                           alias /var/www/html/;
+                           index index.html;
+                       }
+                       location / {
+                           try_files $uri $uri/ =404;
+                       }
+                   }' | sudo tee /etc/nginx/sites-available/default
+             sudo systemctl reload nginx
+             EOF
+}
+Note: Since this post focuses on ALB, I have not covered the VPC networking part here. The example uses default VPCs and Subnets. See how to configure VPC networking using Terraform.
+
+Testing the EC2 instances
+Make sure you have three EC2 instances running in one AZ each, as seen in the screenshot below.
+
+terraform aws alb
+Access the homepage for Instance A, ./images/ path for Instance B and ./register/ path for Instance C. All of them should respond with an appropriate message displayed on the web page, as seen below.
+
+terraform aws alb module
+You should get the same result if your instance configuration is correct.
+
+2. Create an ALB Target Group
+Target groups – as the name suggests, are used to group compute resources that serve a single responsibility/purpose. 
+
+In this example, resources that are part of each target group serve requests sent on a specific path. The Target Groups are described below:
+
+Target Group A – is a group of instances that serves all the incoming requests targeted towards the home page, as well as all those requests that are not served by other target groups.
+Target Group B – is a group of instances that serves all the incoming requests made on the /images path.
+Target Group C – is a group of instances that serves all the incoming requests made on the /register path.
+// Target groups
+resource "aws_lb_target_group" "my_tg_a" { // Target Group A
+ name     = "target-group-a"
+ port     = 80
+ protocol = "HTTP"
+ vpc_id   = var.vpc_id
+}
+
+resource "aws_lb_target_group" "my_tg_b" { // Target Group B
+ name     = "target-group-b"
+ port     = 80
+ protocol = "HTTP"
+ vpc_id   = var.vpc_id
+}
+
+resource "aws_lb_target_group" "my_tg_c" { // Target Group C
+ name     = "target-group-c"
+ port     = 80
+ protocol = "HTTP"
+ vpc_id   = var.vpc_id
+}
+Note that we have not configured the path information for Target Groups in the code above. As far as target groups are concerned, recognizing them with paths is a matter of intent, which listener rules and EC2 instances should fulfill.
+
+3. Add the ALB Target Group attachment
+Add the configuration below to associate EC2 instances with the Target Groups:
+
+Instance A :: Target Group A
+Instance B :: Target Group B
+Instance C :: Target Group C
+// Target group attachment
+resource "aws_lb_target_group_attachment" "tg_attachment_a" {
+ target_group_arn = aws_lb_target_group.my_tg_a.arn
+ target_id        = aws_instance.instance_a.id
+ port             = 80
+}
+
+resource "aws_lb_target_group_attachment" "tg_attachment_b" {
+ target_group_arn = aws_lb_target_group.my_tg_b.arn
+ target_id        = aws_instance.instance_b.id
+ port             = 80
+}
+
+resource "aws_lb_target_group_attachment" "tg_attachment_c" {
+ target_group_arn = aws_lb_target_group.my_tg_c.arn
+ target_id        = aws_instance.instance_c.id
+ port             = 80
+}
+Use terraform apply on the updated configuration, and make sure the instance placement is as intended in the target groups, as seen in the screenshots below.
+
+terraform alb target group
+terraform alb target group
+terraform alb target group
+💡 You might also like:
+
+5 Ways to Manage Terraform at Scale
+How to Automate Terraform Deployments
+How to Manage Multiple Terraform Environments Efficiently
+4. Create an ALB Listener
+Now that we have provisioned the EC2 instances and placed them in appropriate target groups, we are ready to provision the ALB and configure the rules.
+
+The resource aws_lb specified in the Terraform configuration below provisions an ALB. The attribute load_balancer_type specifies the type as “application”. We have also specified the security groups and subnets already created with appropriate routing tables. Even though these few config lines are enough to create an ALB, further settings require more resource blocks. 
+
+// ALB
+resource "aws_lb" "my_alb" {
+ name               = "my-alb"
+ internal           = false
+ load_balancer_type = "application"
+ security_groups    = [var.vpc_sg]
+ subnets            = [var.subnet_a, var.subnet_b, var.subnet_c]
+
+ tags = {
+   Environment = "dev"
+ }
+}
+For example, to create a Listener, we have used the aws_lb_listener resource block. The load_balancer_arn attribute associates this listener to the ALB provisioned because of the previous configuration. The listener also specifies a default action when none of the paths match. As seen below, the default route is configured to a specific target group A:
+
+// Listener
+resource "aws_lb_listener" "my_alb_listener" {
+ load_balancer_arn = aws_lb.my_alb.arn
+ port              = "80"
+ protocol          = "HTTP"
+
+ default_action {
+   type             = "forward"
+   target_group_arn = aws_lb_target_group.my_tg_a.arn
+ }
+}
+5. Manage custom ALB Listener rules
+The default_action specified in the Listener resource block above is essentially a default Listener Rule. It currently satisfies the default routing condition. 
+
+We also want more rules to route the requests to Target Groups B and C. Add the configuration below to add corresponding listener rules.
+
+resource "aws_lb_listener_rule" "rule_b" {
+ listener_arn = aws_lb_listener.my_alb_listener.arn
+ priority     = 60
+
+ action {
+   type             = "forward"
+   target_group_arn = aws_lb_target_group.my_tg_b.arn
+ }
+
+ condition {
+   path_pattern {
+     values = ["/images*"]
+   }
+ }
+}
+
+resource "aws_lb_listener_rule" "rule_c" {
+ listener_arn = aws_lb_listener.my_alb_listener.arn
+ priority     = 40
+
+ action {
+   type             = "forward"
+   target_group_arn = aws_lb_target_group.my_tg_c.arn
+ }
+
+ condition {
+   path_pattern {
+     values = ["/register*"]
+   }
+ }
+}
+This is perhaps the most crucial part of this topic. Teams manage various types of workloads on various services offered by AWS, so the efficiency of the system depends on the rules configured in the Listener. 
+
+Two main resource blocks are – action and condition.
+
+a) action
+This defines the type of routing that needs to be configured. Apart from forward, some other values are redirect, fixed-response, authenticate-cognito, and authenticate-oidc.
+
+When a listener rule uses the “Forward” action, the ALB forwards the request to a target group. (This is commonly used.)
+The “Redirect” action instructs the ALB to respond to the request with a redirect to a different URL.
+The “Fixed-Response” action allows you to configure the ALB to respond to a request with a fixed HTTP response.
+The “Authenticate-Cognito” action is used to implement authentication using Amazon Cognito User Pools.
+The “Authenticate-OIDC” action is used to implement authentication using an OpenID Connect (OIDC) identity provider.
+b) condition
+We know by now that ALB is a Layer 7 load balancer, so the condition block defines conditions in various formats to leverage its capabilities.
+
+host_header condition allows you to specify a list of host header patterns to match.
+http_header condition allows you to match against HTTP headers.
+Using http_request_method, you can specify a list of HTTP request methods or verbs to match.
+path_pattern condition involves matching against path patterns in the request URL, which we have used in our example.
+query_string allows you to match against query strings in the request URL.
+source_ip allows you to specify a list of source IP CIDR notations to match.
+In the configuration above, we have mentioned the path_pattern in the condition block, which accepts /images* and /register* as path values to be matched, and “forwards” those requests to the corresponding target groups. Apply this updated configuration and verify if the rules are configured as expected.
+
+terraform alb listener rule
+6. Test the path-based routing on ALB
+Navigate to the ALB section of AWS, and access the home page using its auto-assigned DNS address. It should correctly serve the homepage configured on Instance A (part of target group A).
+
+aws alb terraform example
+Using the same DNS address, try to access the /images and /register paths. These paths should be served by corresponding EC2 instances placed in the corresponding target group as configured in the Listener Rules. 
+
+alb module terraform
+terraform create alb
+We have successfully configured the path-based routing on ALB!
+
+How to integrate ALB with AWS Lambda
+As mentioned earlier, AWS offers multiple integrations for ALB to route requests to various other services — Lambda is one of them. Organizations may choose to run a part of their workload using serverless technologies. This is where Lambda functions come into the picture. 
+
+In this section, we will see how to configure ALB and Listener rules to route requests to the newly created Lambda function, as seen in the following updated diagram.
+
+terraform alb ingress controller
+Here, you can find the source code for our simple lambda function and the Terraform configuration to provision it in AWS.
+
+For this example, we want to create a Lambda function to greet visitors when they access the /greeting path on the ALB. To integrate this Lambda function with ALB, we begin with creating a target group based on the configuration below.
+
+# Define the target group for Lambda
+resource "aws_lb_target_group" "my_tg_lambda" { // Target Group Lambda
+ name        = "target-group-lambda"
+ target_type = "lambda"
+ vpc_id      = var.vpc_id
+}
+The configuration for the target group is straightforward but different as compared to the target groups we configured for EC2 instances in previous sections. Here, we explicitly specify the target_type as “lambda” which otherwise would have defaulted to EC2 instances. Also, we don’t need to specify the port and protocol for the EC2 instances.
+
+Next, attach the Lambda function to this newly created target group of type “lambda”. The attachment resource is similar to the previous ones, the only difference being that we do not specify the port attribute here.
+
+resource "aws_lb_target_group_attachment" "tg_attachment_lambda" {
+ target_group_arn = aws_lb_target_group.my_tg_lambda.arn
+ target_id        = aws_lambda_function.my_lambda.arn
+}
+Finally, with the Lambda function associated with the target group, it’s time to create a listener rule to route incoming requests on /greeting path to the Lambda function to serve them appropriately. 
+
+Add the listener configuration below to our Terraform configuration. The listener configuration is mostly similar to the previous configurations, but we have used Lambda ARN to forward the requests to.
+
+resource "aws_lb_listener_rule" "rule_lambda" {
+ listener_arn = aws_lb_listener.my_alb_listener.arn
+ priority     = 80
+
+ action {
+   type             = "forward"
+   target_group_arn = aws_lb_target_group.my_tg_lambda.arn
+ }
+
+ condition {
+   path_pattern {
+     values = ["/greeting*"]
+   }
+ }
+}
+Apply the updated Terraform config and make sure the Lambda function is placed in the new target group, as seen below.
+
+terraform alb target group attachment
+Test the deployment by visiting the ALB DNS with /greeting path. It should display the greeting message from the Lambda function.
+
+terreaform load balancer lambda
+How to integrate ALB with AWS Web Application Firewall
+A Web Application Firewall (WAF) is a security solution designed to protect web applications from various online threats and attacks. Its primary purpose is to enhance the security of web applications by monitoring, filtering, and blocking malicious traffic before it reaches the application.
+
+Using Terraform, configuring the WAF ACL is easy. However, you may need more time to configure the specific rules to block undesired/spam requests. 
+
+The config below creates a simple WAF ACL:
+
+resource "aws_wafv2_web_acl" "my_waf" {
+ name  = "my-waf-acl"
+ scope = "REGIONAL"
+
+ default_action {
+   allow {}
+ }
+
+ visibility_config {
+   cloudwatch_metrics_enabled = false
+   metric_name                = "my-waf-metric"
+   sampled_requests_enabled   = false
+ }
+}
+To associate the WAF service with ALB, add another resource block as below.
+
+resource "aws_wafv2_web_acl_association" "waf-alb" {
+ resource_arn = aws_lb.my_alb.arn
+ web_acl_arn  = aws_wafv2_web_acl.my_waf.arn
+}
+If you run terraform apply now, you should be able to see that WAF ACLs are configured for our ALB, as seen in the screenshot below.
+
+terraform ecs alb
